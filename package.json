@@ -1,7 +1,7 @@
 {
   "name": "sevenbites-restaurant-backend",
-  "version": "1.0.0",
-  "description": "Standalone backend for SevenBites restaurant partner onboarding (separate from the main app backend)",
+  "version": "1.1.0",
+  "description": "Standalone backend for SevenBites restaurant partner onboarding + Restaurant Setup Module (separate from the main app backend)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,12 +11,14 @@
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.5.1",
     "cors": "^2.8.5",
+    "csv-parse": "^5.6.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.8.3",
     "multer": "^1.4.5-lts.1",
-    "streamifier": "^0.1.1"
+    "streamifier": "^0.1.1",
+    "razorpay": "^2.9.4"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"
