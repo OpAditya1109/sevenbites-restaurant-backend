@@ -67,7 +67,8 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
 
     const {
       restaurantId, items, totalAmount, itemTotal, deliveryFee, platformFee, gst,
-      couponCode, discountAmount, paymentMethod, deliveryAddress,
+      couponCode, discountAmount, paymentMethod, deliveryAddress, estimatedDeliveryTime,
+      deliveryLatitude, deliveryLongitude, // NEW — from the customer's selected Address doc
     } = orderData || {};
 
     if (!items || items.length === 0) {
@@ -78,9 +79,13 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
     }
 
     let restaurantName = "";
+    let restaurantLatitude = null;
+    let restaurantLongitude = null;
     if (restaurantId) {
       const restaurant = await RestaurantPartner.findById(restaurantId);
       restaurantName = restaurant?.restaurantName || "";
+      restaurantLatitude = restaurant?.latitude ?? null;
+      restaurantLongitude = restaurant?.longitude ?? null;
     }
 
     const order = await Order.create({
@@ -98,6 +103,14 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       paymentMethod: paymentMethod || "upi",
       paymentStatus: "paid",
       deliveryAddress,
+      restaurantLatitude,
+      restaurantLongitude,
+      deliveryLatitude: deliveryLatitude ?? null,
+      deliveryLongitude: deliveryLongitude ?? null,
+      // Real distance-based ETA calculated on the Checkout screen via
+      // /public/restaurants/:id/delivery-estimate — falls back to the model
+      // default ("30-45 min") only if the client couldn't compute one.
+      ...(estimatedDeliveryTime ? { estimatedDeliveryTime } : {}),
       status: "placed",
       razorpayOrderId: razorpay_order_id,
       razorpayPaymentId: razorpay_payment_id,
@@ -120,7 +133,8 @@ exports.placeOrder = async (req, res) => {
   try {
     const {
       restaurantId, items, totalAmount, itemTotal, deliveryFee, platformFee, gst,
-      couponCode, discountAmount, paymentMethod, deliveryAddress,
+      couponCode, discountAmount, paymentMethod, deliveryAddress, estimatedDeliveryTime,
+      deliveryLatitude, deliveryLongitude, // NEW — from the customer's selected Address doc
     } = req.body;
 
     if (!items || items.length === 0) {
@@ -131,9 +145,14 @@ exports.placeOrder = async (req, res) => {
     }
 
     let restaurantName = "";
+    let restaurantLatitude = null;
+    let restaurantLongitude = null;
     if (restaurantId) {
       const restaurant = await RestaurantPartner.findById(restaurantId);
       restaurantName = restaurant?.restaurantName || "";
+      // Snapshot the restaurant's current coords onto the order — see model comment
+      restaurantLatitude = restaurant?.latitude ?? null;
+      restaurantLongitude = restaurant?.longitude ?? null;
     }
 
     const order = await Order.create({
@@ -151,6 +170,11 @@ exports.placeOrder = async (req, res) => {
       paymentMethod: paymentMethod || "cod",
       paymentStatus: paymentMethod === "cod" ? "pending" : "paid",
       deliveryAddress,
+      restaurantLatitude,
+      restaurantLongitude,
+      deliveryLatitude: deliveryLatitude ?? null,
+      deliveryLongitude: deliveryLongitude ?? null,
+      ...(estimatedDeliveryTime ? { estimatedDeliveryTime } : {}),
       status: "placed",
     });
 
@@ -179,11 +203,48 @@ exports.getUserOrders = async (req, res) => {
 
 exports.getOrderById = async (req, res) => {
   try {
+    // latitude/longitude included as a fallback for orders placed before the
+    // restaurantLatitude/restaurantLongitude snapshot fields existed
     const order = await Order.findOne({ _id: req.params.id, userId: req.user._id }).populate(
       "restaurantId",
-      "restaurantName logoUrl address"
+      "restaurantName logoUrl address latitude longitude"
     );
     if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+    res.json({ success: true, data: order });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// NEW — hook for the delivery-partner app to push live GPS pings once it exists.
+// TODO: once the delivery-partner backend/auth exists, protect this with a
+// verifyDeliveryPartnerToken middleware (and check order.assignedRiderId === req.rider._id)
+// instead of leaving it open — right now there is no rider auth to check against.
+exports.updateRiderLocation = async (req, res) => {
+  try {
+    const { latitude, longitude, riderName } = req.body;
+    if (typeof latitude !== "number" || typeof longitude !== "number") {
+      return res.status(400).json({ success: false, message: "latitude and longitude (numbers) are required" });
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+
+    order.riderLatitude = latitude;
+    order.riderLongitude = longitude;
+    order.riderLocationUpdatedAt = new Date();
+    if (riderName) order.riderName = riderName;
+    await order.save();
+
+    // Same room the tracking screen already joins for order_status_updated
+    getIO().to(`order_${order._id}`).emit("order_location_updated", {
+      _id: order._id,
+      riderLatitude: order.riderLatitude,
+      riderLongitude: order.riderLongitude,
+      riderName: order.riderName,
+      riderLocationUpdatedAt: order.riderLocationUpdatedAt,
+    });
+
     res.json({ success: true, data: order });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

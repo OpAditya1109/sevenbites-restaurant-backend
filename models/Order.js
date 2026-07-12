@@ -43,6 +43,19 @@ const orderSchema = new mongoose.Schema(
     razorpayPaymentId: { type: String, default: "" },
     razorpaySignature: { type: String, default: "" },
     deliveryAddress: { type: String, required: true },
+    // NEW — coordinates needed to render a real map on the tracking screen.
+    // Restaurant coords are snapshotted at order-creation time (so the pin stays
+    // correct even if the restaurant edits its profile address later).
+    restaurantLatitude: { type: Number, default: null },
+    restaurantLongitude: { type: Number, default: null },
+    deliveryLatitude: { type: Number, default: null },
+    deliveryLongitude: { type: Number, default: null },
+    // NEW — live rider position, written by the delivery-partner app once it exists.
+    // Null until the rider's app starts sending GPS pings after pickup.
+    riderLatitude: { type: Number, default: null },
+    riderLongitude: { type: Number, default: null },
+    riderName: { type: String, default: "" },
+    riderLocationUpdatedAt: { type: Date, default: null },
     status: {
       type: String,
       // NEW — "ready" (packed, waiting for pickup) and "rejected" (restaurant declined)

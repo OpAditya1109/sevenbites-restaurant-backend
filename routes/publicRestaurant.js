@@ -13,13 +13,62 @@ const PUBLIC_PROFILE_FIELDS =
   "googleMapLink latitude longitude deliveryRadiusKm fssaiLicenseNumber gstNumber status createdAt " +
   "rating totalRatings deliveryTime deliveryFee minOrder tags";
 
-// GET /api/public/restaurants — approved restaurants only, for the Customer App home/listing feed
+// GET /api/public/restaurants?category=Pizza — approved restaurants only, for the Customer App
+// home/listing feed. `category` (from the "What's on your mind?" chips) filters against
+// cuisineType, the cuisine tag list, and general tags.
 router.get("/", async (req, res) => {
   try {
-    const restaurants = await RestaurantPartner.find({ status: "approved" }).select(PUBLIC_PROFILE_FIELDS);
+    const { category } = req.query;
+    const filter = { status: "approved" };
+
+    if (category && category.trim()) {
+      const regex = new RegExp(escapeRegex(category.trim()), "i");
+      filter.$or = [{ cuisineType: regex }, { cuisine: regex }, { tags: regex }];
+    }
+
+    const restaurants = await RestaurantPartner.find(filter).select(PUBLIC_PROFILE_FIELDS);
     return res.json({ success: true, restaurants });
   } catch (err) {
     console.error("Public restaurant list error:", err);
+    return res.status(500).json({ success: false, message: "Something went wrong." });
+  }
+});
+
+// GET /api/public/restaurants/search?q=biryani — combined search used by the Search screen.
+// Matches restaurants by name/cuisine/tags AND menu items (dishes) by name, so one query box
+// can surface both "Domino's" and "Margherita Pizza" results.
+// NOTE: this must be declared before "/:id" or Express will treat "search" as an :id value.
+router.get("/search", async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    if (q.length < 2) {
+      return res.json({ success: true, restaurants: [], menuItems: [] });
+    }
+
+    const regex = new RegExp(escapeRegex(q), "i");
+
+    const [restaurants, menuItemsRaw] = await Promise.all([
+      RestaurantPartner.find({
+        status: "approved",
+        $or: [{ restaurantName: regex }, { cuisineType: regex }, { cuisine: regex }, { tags: regex }],
+      }).select(PUBLIC_PROFILE_FIELDS),
+
+      MenuItem.find({ isAvailable: true, name: regex })
+        .select("name description price discountPrice images foodType isBestseller stockStatus restaurant")
+        .populate({
+          path: "restaurant",
+          match: { status: "approved" }, // drops items whose restaurant isn't live/approved
+          select: PUBLIC_PROFILE_FIELDS,
+        })
+        .limit(40),
+    ]);
+
+    // populate() sets `restaurant` to null when the match filter above excludes it — drop those
+    const menuItems = menuItemsRaw.filter((item) => item.restaurant);
+
+    return res.json({ success: true, restaurants, menuItems });
+  } catch (err) {
+    console.error("Public search error:", err);
     return res.status(500).json({ success: false, message: "Something went wrong." });
   }
 });
@@ -141,6 +190,12 @@ router.get("/:id/delivery-estimate", async (req, res) => {
     return res.status(500).json({ success: false, message: "Something went wrong." });
   }
 });
+
+// Escapes regex special characters so user-typed search text can't break the query
+// (or accidentally be treated as a regex pattern).
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function haversineDistanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371; // Earth radius in km

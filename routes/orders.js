@@ -8,6 +8,7 @@ const {
   updateOrderStatus,
   createRazorpayOrder,
   verifyPaymentAndPlaceOrder,
+  updateRiderLocation,
 } = require("../controllers/orderController");
 const verifyUserToken = require("../middleware/verifyUserToken");
 
@@ -21,5 +22,8 @@ router.get("/my-orders", verifyUserToken, getUserOrders);
 router.get("/:id", verifyUserToken, getOrderById);
 router.put("/:id/cancel", verifyUserToken, cancelOrder);
 router.put("/:id/status", updateOrderStatus); // TODO: protect with restaurant-partner auth once dashboard order view is built
+
+// NEW — delivery-partner app will call this to push live GPS pings (see controller TODO re: auth)
+router.patch("/:id/rider-location", updateRiderLocation);
 
 module.exports = router;
