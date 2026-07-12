@@ -11,6 +11,8 @@ const addressSchema = new mongoose.Schema(
     city: { type: String, required: true, trim: true },
     state: { type: String, default: "Maharashtra", trim: true },
     pincode: { type: String, trim: true },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
     isDefault: { type: Boolean, default: false },
   },
   { timestamps: true }

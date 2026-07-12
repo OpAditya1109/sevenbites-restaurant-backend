@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const Razorpay = require("razorpay");
 const Order = require("../models/Order");
 const RestaurantPartner = require("../models/RestaurantPartner");
+const Coupon = require("../models/Coupon");
 const { getIO } = require("../utils/socket"); // NEW
 
 const razorpay = new Razorpay({
@@ -64,7 +65,10 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: "Payment verification failed" });
     }
 
-    const { restaurantId, items, totalAmount, deliveryFee, paymentMethod, deliveryAddress } = orderData || {};
+    const {
+      restaurantId, items, totalAmount, itemTotal, deliveryFee, platformFee, gst,
+      couponCode, discountAmount, paymentMethod, deliveryAddress,
+    } = orderData || {};
 
     if (!items || items.length === 0) {
       return res.status(400).json({ success: false, message: "Order must have at least one item" });
@@ -85,7 +89,12 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       restaurantName,
       items,
       totalAmount,
+      itemTotal: itemTotal || 0,
       deliveryFee: deliveryFee || 0,
+      platformFee: platformFee || 0,
+      gst: gst || 0,
+      couponCode: couponCode || "",
+      discountAmount: discountAmount || 0,
       paymentMethod: paymentMethod || "upi",
       paymentStatus: "paid",
       deliveryAddress,
@@ -94,6 +103,10 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       razorpayPaymentId: razorpay_payment_id,
       razorpaySignature: razorpay_signature,
     });
+
+    if (couponCode) {
+      Coupon.updateOne({ code: couponCode }, { $inc: { timesUsed: 1 } }).catch(() => {});
+    }
 
     notifyRestaurantOfNewOrder(order); // NEW
 
@@ -105,7 +118,10 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
 
 exports.placeOrder = async (req, res) => {
   try {
-    const { restaurantId, items, totalAmount, deliveryFee, paymentMethod, deliveryAddress } = req.body;
+    const {
+      restaurantId, items, totalAmount, itemTotal, deliveryFee, platformFee, gst,
+      couponCode, discountAmount, paymentMethod, deliveryAddress,
+    } = req.body;
 
     if (!items || items.length === 0) {
       return res.status(400).json({ success: false, message: "Order must have at least one item" });
@@ -126,12 +142,21 @@ exports.placeOrder = async (req, res) => {
       restaurantName,
       items,
       totalAmount,
+      itemTotal: itemTotal || 0,
       deliveryFee: deliveryFee || 0,
+      platformFee: platformFee || 0,
+      gst: gst || 0,
+      couponCode: couponCode || "",
+      discountAmount: discountAmount || 0,
       paymentMethod: paymentMethod || "cod",
       paymentStatus: paymentMethod === "cod" ? "pending" : "paid",
       deliveryAddress,
       status: "placed",
     });
+
+    if (couponCode) {
+      Coupon.updateOne({ code: couponCode }, { $inc: { timesUsed: 1 } }).catch(() => {});
+    }
 
     notifyRestaurantOfNewOrder(order); // NEW
 

@@ -58,6 +58,7 @@ app.use("/api/auth", require("./routes/auth"));
 app.use("/api/orders", require("./routes/orders"));
 app.use("/api/address", require("./routes/address"));
 app.use("/api/reviews", require("./routes/reviews"));
+app.use("/api/coupons", require("./routes/coupons")); // NEW — "View all coupons" + apply-coupon on Cart screen
 
 // Turns multer/file validation errors into clean JSON instead of a raw HTML crash
 app.use((err, req, res, next) => {

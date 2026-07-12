@@ -73,6 +73,89 @@ router.get("/:id/full", async (req, res) => {
   }
 });
 
+// GET /api/public/restaurants/:id/delivery-estimate?lat=&lng=
+// Uses the restaurant's exact saved location vs the customer's exact drop pin
+// (both lat/lng) to give a real distance-based ETA instead of a flat guess.
+router.get("/:id/delivery-estimate", async (req, res) => {
+  try {
+    const { lat, lng } = req.query;
+    const destLat = Number(lat);
+    const destLng = Number(lng);
+
+    const restaurant = await RestaurantPartner.findOne({ _id: req.params.id, status: "approved" }).select(
+      "restaurantName latitude longitude deliveryTime"
+    );
+    if (!restaurant) return res.status(404).json({ success: false, message: "Restaurant not found" });
+
+    // Prep time — how long the kitchen needs to get the order ready. Falls back
+    // to a sensible default if the restaurant hasn't set exact prep timing.
+    const prepMinutes = 15;
+
+    if (
+      !restaurant.latitude ||
+      !restaurant.longitude ||
+      Number.isNaN(destLat) ||
+      Number.isNaN(destLng)
+    ) {
+      // No exact coordinates on one side — fall back to the restaurant's listed range.
+      return res.json({
+        success: true,
+        data: {
+          distanceKm: null,
+          prepMinutes,
+          travelMinutes: null,
+          minMinutes: 30,
+          maxMinutes: 45,
+          etaText: restaurant.deliveryTime || "30-45 min",
+        },
+      });
+    }
+
+    const distanceKm = haversineDistanceKm(
+      restaurant.latitude,
+      restaurant.longitude,
+      destLat,
+      destLng
+    );
+
+    // Average city delivery-partner speed, incl. traffic/signals/parking.
+    const AVG_SPEED_KMPH = 22;
+    const travelMinutes = Math.max(5, Math.round((distanceKm / AVG_SPEED_KMPH) * 60));
+
+    const minMinutes = prepMinutes + travelMinutes;
+    const maxMinutes = minMinutes + 10; // buffer for kitchen/traffic variance
+
+    return res.json({
+      success: true,
+      data: {
+        distanceKm: Math.round(distanceKm * 10) / 10,
+        prepMinutes,
+        travelMinutes,
+        minMinutes,
+        maxMinutes,
+        etaText: `${minMinutes}-${maxMinutes} min`,
+      },
+    });
+  } catch (err) {
+    console.error("Delivery estimate error:", err);
+    return res.status(500).json({ success: false, message: "Something went wrong." });
+  }
+});
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 function computeIsOpenNow(timing) {
   if (!timing) return true;
   if (timing.isTemporarilyClosed) return false;
