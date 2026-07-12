@@ -2,24 +2,33 @@ const crypto = require("crypto");
 const Razorpay = require("razorpay");
 const Order = require("../models/Order");
 const RestaurantPartner = require("../models/RestaurantPartner");
+const { getIO } = require("../utils/socket"); // NEW
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// Step 1 of online payment: frontend calls this to get a Razorpay order to
-// open in the checkout widget. Nothing is saved to our DB yet.
+// NEW — pushes the freshly placed order straight into the restaurant dashboard's socket room
+function notifyRestaurantOfNewOrder(order) {
+  try {
+    getIO().to(`restaurant_${order.restaurantId}`).emit("new_order", order);
+  } catch (e) {
+    // Socket isn't critical to order placement — never fail the request because of it
+    console.error("Socket emit failed:", e.message);
+  }
+}
+
 exports.createRazorpayOrder = async (req, res) => {
   try {
-    const { amount } = req.body; // amount in rupees (e.g. grandTotal from checkout)
+    const { amount } = req.body;
 
     if (!amount || isNaN(amount) || Number(amount) <= 0) {
       return res.status(400).json({ success: false, message: "A valid amount is required" });
     }
 
     const razorpayOrder = await razorpay.orders.create({
-      amount: Math.round(Number(amount) * 100), // Razorpay expects paise
+      amount: Math.round(Number(amount) * 100),
       currency: "INR",
       receipt: `sb_rcpt_${Date.now()}`,
     });
@@ -38,10 +47,6 @@ exports.createRazorpayOrder = async (req, res) => {
   }
 };
 
-// Step 2 of online payment: frontend calls this after the Razorpay checkout
-// succeeds, sending back the ids/signature it received. We verify the
-// signature ourselves (never trust the client) and only THEN create the
-// real Order in our DB, marked as paid.
 exports.verifyPaymentAndPlaceOrder = async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderData } = req.body;
@@ -59,7 +64,6 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: "Payment verification failed" });
     }
 
-    // Signature checks out — the payment is genuine. Now place the order.
     const { restaurantId, items, totalAmount, deliveryFee, paymentMethod, deliveryAddress } = orderData || {};
 
     if (!items || items.length === 0) {
@@ -91,13 +95,14 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       razorpaySignature: razorpay_signature,
     });
 
+    notifyRestaurantOfNewOrder(order); // NEW
+
     res.status(201).json({ success: true, data: order });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Used only for Cash on Delivery — no payment gateway involved.
 exports.placeOrder = async (req, res) => {
   try {
     const { restaurantId, items, totalAmount, deliveryFee, paymentMethod, deliveryAddress } = req.body;
@@ -127,6 +132,8 @@ exports.placeOrder = async (req, res) => {
       deliveryAddress,
       status: "placed",
     });
+
+    notifyRestaurantOfNewOrder(order); // NEW
 
     res.status(201).json({ success: true, data: order });
   } catch (error) {
@@ -162,7 +169,7 @@ exports.cancelOrder = async (req, res) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, userId: req.user._id });
     if (!order) return res.status(404).json({ success: false, message: "Order not found" });
-    if (["delivered", "cancelled", "out_for_delivery"].includes(order.status)) {
+    if (["delivered", "cancelled", "rejected", "out_for_delivery"].includes(order.status)) {
       return res.status(400).json({ success: false, message: `Cannot cancel order with status: ${order.status}` });
     }
     order.status = "cancelled";
@@ -175,11 +182,12 @@ exports.cancelOrder = async (req, res) => {
   }
 };
 
-// For restaurant dashboard / admin use later
+// Kept for back-compat / admin use. The restaurant dashboard now uses
+// controllers/restaurantOrderController.js instead, which validates status transitions.
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    const validStatuses = ["placed", "confirmed", "preparing", "out_for_delivery", "delivered", "cancelled"];
+    const validStatuses = ["placed", "confirmed", "preparing", "ready", "out_for_delivery", "delivered", "cancelled", "rejected"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, message: "Invalid status" });
     }

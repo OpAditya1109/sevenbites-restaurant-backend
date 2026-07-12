@@ -5,7 +5,7 @@ const orderItemSchema = new mongoose.Schema(
   {
     menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "MenuItem" },
     name: { type: String, required: true },
-    price: { type: Number, required: true }, // effectivePrice at time of order, including chosen variant priceDelta
+    price: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1 },
     selectedVariants: [
       {
@@ -34,20 +34,26 @@ const orderSchema = new mongoose.Schema(
     deliveryFee: { type: Number, default: 0 },
     paymentMethod: { type: String, enum: ["upi", "card", "cod", "wallet"], default: "cod" },
     paymentStatus: { type: String, enum: ["pending", "paid", "failed"], default: "pending" },
-    // Razorpay tracking (only populated for online payments — upi/card/wallet)
     razorpayOrderId: { type: String, default: "" },
     razorpayPaymentId: { type: String, default: "" },
     razorpaySignature: { type: String, default: "" },
     deliveryAddress: { type: String, required: true },
     status: {
       type: String,
-      enum: ["placed", "confirmed", "preparing", "out_for_delivery", "delivered", "cancelled"],
+      // NEW — "ready" (packed, waiting for pickup) and "rejected" (restaurant declined)
+      enum: ["placed", "confirmed", "preparing", "ready", "out_for_delivery", "delivered", "cancelled", "rejected"],
       default: "placed",
     },
     estimatedDeliveryTime: { type: String, default: "30-45 min" },
+    // NEW — timeline stamps for the dashboard + customer order-tracking screen
+    confirmedAt: { type: Date },
+    preparingAt: { type: Date },
+    readyAt: { type: Date },
+    outForDeliveryAt: { type: Date },
     deliveredAt: { type: Date },
     cancelledAt: { type: Date },
     cancelReason: { type: String, default: "" },
+    rejectionReason: { type: String, default: "" }, // NEW
   },
   { timestamps: true }
 );
