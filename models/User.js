@@ -15,10 +15,12 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     password: {
       type: String,
-      required: [true, "Password is required"],
+      // Not required for accounts created via Google Sign-In
+      required: [function () { return !this.googleId; }, "Password is required"],
       minlength: [6, "Password must be at least 6 characters"],
       select: false,
     },
+    googleId: { type: String, unique: true, sparse: true }, // NEW
     avatar: { type: String, default: "" },
     isActive: { type: Boolean, default: true },
   },
@@ -26,13 +28,14 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
+  if (!this.isModified("password") || !this.password) return next();
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });
 
 userSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.password) return false; // Google-only account, no password set
   return bcrypt.compare(candidatePassword, this.password);
 };
 
