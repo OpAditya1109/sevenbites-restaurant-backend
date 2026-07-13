@@ -1,4 +1,6 @@
 const Order = require("../models/Order");
+const RestaurantSettlementConfig = require("../models/RestaurantSettlementConfig");
+const { computeSettlement } = require("../utils/settlementCalculator");
 const { getIO } = require("../utils/socket");
 
 // Statuses the restaurant is allowed to move an order INTO, keyed by its CURRENT status.
@@ -19,6 +21,16 @@ const STATUS_TIMESTAMP_FIELD = {
   out_for_delivery: "outForDeliveryAt",
   delivered: "deliveredAt",
 };
+
+// Ensures exactly one settlement config doc exists — same pattern as
+// pricingController.js's getOrCreateActiveConfig().
+async function getOrCreateActiveSettlementConfig() {
+  let config = await RestaurantSettlementConfig.findOne({ key: "default" });
+  if (!config) {
+    config = await RestaurantSettlementConfig.create({ key: "default" });
+  }
+  return config;
+}
 
 // Pushes the update to the customer's app instantly — both a per-user room (order list/home
 // screen) and a per-order room (the live tracking screen if they're on it)
@@ -113,6 +125,22 @@ exports.updateRestaurantOrderStatus = async (req, res) => {
     order.status = status;
     const tsField = STATUS_TIMESTAMP_FIELD[status];
     if (tsField) order[tsField] = new Date();
+
+    // NEW — compute + store restaurant settlement figures only once the order
+    // is actually delivered. Cancelled/rejected orders never reach this branch,
+    // so they never count toward commission.
+    if (status === "delivered") {
+      const config = await getOrCreateActiveSettlementConfig();
+      const settlement = computeSettlement(
+        { itemTotal: order.itemTotal, totalAmount: order.totalAmount, paymentMethod: order.paymentMethod },
+        config
+      );
+      order.commissionAmount = settlement.commissionAmount;
+      order.fulfilmentFee = settlement.fulfilmentFee;
+      order.paymentGatewayCharge = settlement.paymentGatewayCharge;
+      order.netSettlement = settlement.netSettlement;
+      order.settlementComputedAt = new Date();
+    }
 
     await order.save();
     notifyCustomer(order);

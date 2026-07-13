@@ -35,6 +35,13 @@ const orderSchema = new mongoose.Schema(
     deliveryFee: { type: Number, default: 0 },
     platformFee: { type: Number, default: 0 },
     gst: { type: Number, default: 0 },
+
+    commissionAmount: { type: Number, default: 0 },
+    fulfilmentFee: { type: Number, default: 0 },
+    paymentGatewayCharge: { type: Number, default: 0 },
+    netSettlement: { type: Number, default: 0 },
+    settlementComputedAt: { type: Date, default: null },
+    couponCode: { type: String, default: "" },
     couponCode: { type: String, default: "" },
     discountAmount: { type: Number, default: 0 },
     // NEW — snapshot of what drove the fee calc, for auditing/support

@@ -62,6 +62,8 @@ app.use("/api/coupons", require("./routes/coupons")); // NEW — "View all coupo
 // Pricing — public preview/calculate + admin-key-gated config management
 app.use("/api/public/pricing", require("./routes/pricing"));
 app.use("/api/admin/pricing-config", require("./routes/adminPricing"));
+app.use("/api/admin/settlement", require("./routes/adminSettlement")); // NEW — commission/fulfilment/PG config + payout recording
+
 // Turns multer/file validation errors into clean JSON instead of a raw HTML crash
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError || err?.message) {
