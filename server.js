@@ -59,7 +59,9 @@ app.use("/api/orders", require("./routes/orders"));
 app.use("/api/address", require("./routes/address"));
 app.use("/api/reviews", require("./routes/reviews"));
 app.use("/api/coupons", require("./routes/coupons")); // NEW — "View all coupons" + apply-coupon on Cart screen
-
+// Pricing — public preview/calculate + admin-key-gated config management
+app.use("/api/public/pricing", require("./routes/pricing"));
+app.use("/api/admin/pricing-config", require("./routes/adminPricing"));
 // Turns multer/file validation errors into clean JSON instead of a raw HTML crash
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError || err?.message) {

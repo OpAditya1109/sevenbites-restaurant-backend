@@ -3,21 +3,59 @@ const Razorpay = require("razorpay");
 const Order = require("../models/Order");
 const RestaurantPartner = require("../models/RestaurantPartner");
 const Coupon = require("../models/Coupon");
-const { getIO } = require("../utils/socket"); // NEW
+const PricingConfig = require("../models/PricingConfig");
+const { computeCharges } = require("../utils/pricingCalculator");
+const { haversineDistanceKm } = require("../utils/geo");
+const { getIO } = require("../utils/socket");
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// NEW — pushes the freshly placed order straight into the restaurant dashboard's socket room
 function notifyRestaurantOfNewOrder(order) {
   try {
     getIO().to(`restaurant_${order.restaurantId}`).emit("new_order", order);
   } catch (e) {
-    // Socket isn't critical to order placement — never fail the request because of it
     console.error("Socket emit failed:", e.message);
   }
+}
+
+async function getActivePricingConfig() {
+  let config = await PricingConfig.findOne({ key: "default" });
+  if (!config) config = await PricingConfig.create({ key: "default" });
+  return config;
+}
+
+// Recomputes deliveryFee/platformFee/gst/totalAmount from PricingConfig — never
+// trusts the client-sent fee numbers. itemTotal and discountAmount are still
+// taken from the client for now (menu-price integrity and coupon re-validation
+// at order time are separate concerns, out of scope for this change).
+async function recomputeOrderCharges({ restaurant, itemTotal, discountAmount, deliveryLatitude, deliveryLongitude }) {
+  const config = await getActivePricingConfig();
+
+  let distanceKm = null;
+  if (
+    restaurant?.latitude != null &&
+    restaurant?.longitude != null &&
+    deliveryLatitude != null &&
+    deliveryLongitude != null
+  ) {
+    distanceKm = haversineDistanceKm(restaurant.latitude, restaurant.longitude, deliveryLatitude, deliveryLongitude);
+  }
+
+  const charges = computeCharges({ orderValue: itemTotal, distanceKm }, config);
+  const safeDiscount = Math.max(0, Number(discountAmount) || 0);
+  const totalAmount = Math.max(0, charges.total - safeDiscount);
+
+  return {
+    deliveryFee: charges.deliveryFee,
+    platformFee: charges.platformFee,
+    gst: charges.gst,
+    gstRatePercent: charges.gstRatePercent,
+    distanceKm: charges.distanceKm,
+    totalAmount,
+  };
 }
 
 exports.createRazorpayOrder = async (req, res) => {
@@ -66,9 +104,8 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
     }
 
     const {
-      restaurantId, items, totalAmount, itemTotal, deliveryFee, platformFee, gst,
-      couponCode, discountAmount, paymentMethod, deliveryAddress, estimatedDeliveryTime,
-      deliveryLatitude, deliveryLongitude, // NEW — from the customer's selected Address doc
+      restaurantId, items, itemTotal, couponCode, discountAmount, paymentMethod,
+      deliveryAddress, estimatedDeliveryTime, deliveryLatitude, deliveryLongitude,
     } = orderData || {};
 
     if (!items || items.length === 0) {
@@ -78,38 +115,43 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: "Delivery address is required" });
     }
 
+    let restaurant = null;
     let restaurantName = "";
-    let restaurantLatitude = null;
-    let restaurantLongitude = null;
     if (restaurantId) {
-      const restaurant = await RestaurantPartner.findById(restaurantId);
+      restaurant = await RestaurantPartner.findById(restaurantId);
       restaurantName = restaurant?.restaurantName || "";
-      restaurantLatitude = restaurant?.latitude ?? null;
-      restaurantLongitude = restaurant?.longitude ?? null;
     }
+
+    // Server is now the source of truth for these — client-sent fee/total values are ignored.
+    const charges = await recomputeOrderCharges({
+      restaurant,
+      itemTotal: itemTotal || 0,
+      discountAmount,
+      deliveryLatitude,
+      deliveryLongitude,
+    });
 
     const order = await Order.create({
       userId: req.user._id,
       restaurantId,
       restaurantName,
       items,
-      totalAmount,
+      totalAmount: charges.totalAmount,
       itemTotal: itemTotal || 0,
-      deliveryFee: deliveryFee || 0,
-      platformFee: platformFee || 0,
-      gst: gst || 0,
+      deliveryFee: charges.deliveryFee,
+      platformFee: charges.platformFee,
+      gst: charges.gst,
+      gstRatePercent: charges.gstRatePercent,
+      distanceKm: charges.distanceKm,
       couponCode: couponCode || "",
-      discountAmount: discountAmount || 0,
+      discountAmount: Math.max(0, Number(discountAmount) || 0),
       paymentMethod: paymentMethod || "upi",
       paymentStatus: "paid",
       deliveryAddress,
-      restaurantLatitude,
-      restaurantLongitude,
+      restaurantLatitude: restaurant?.latitude ?? null,
+      restaurantLongitude: restaurant?.longitude ?? null,
       deliveryLatitude: deliveryLatitude ?? null,
       deliveryLongitude: deliveryLongitude ?? null,
-      // Real distance-based ETA calculated on the Checkout screen via
-      // /public/restaurants/:id/delivery-estimate — falls back to the model
-      // default ("30-45 min") only if the client couldn't compute one.
       ...(estimatedDeliveryTime ? { estimatedDeliveryTime } : {}),
       status: "placed",
       razorpayOrderId: razorpay_order_id,
@@ -121,7 +163,7 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
       Coupon.updateOne({ code: couponCode }, { $inc: { timesUsed: 1 } }).catch(() => {});
     }
 
-    notifyRestaurantOfNewOrder(order); // NEW
+    notifyRestaurantOfNewOrder(order);
 
     res.status(201).json({ success: true, data: order });
   } catch (error) {
@@ -132,9 +174,8 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
 exports.placeOrder = async (req, res) => {
   try {
     const {
-      restaurantId, items, totalAmount, itemTotal, deliveryFee, platformFee, gst,
-      couponCode, discountAmount, paymentMethod, deliveryAddress, estimatedDeliveryTime,
-      deliveryLatitude, deliveryLongitude, // NEW — from the customer's selected Address doc
+      restaurantId, items, itemTotal, couponCode, discountAmount, paymentMethod,
+      deliveryAddress, estimatedDeliveryTime, deliveryLatitude, deliveryLongitude,
     } = req.body;
 
     if (!items || items.length === 0) {
@@ -144,34 +185,40 @@ exports.placeOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: "Delivery address is required" });
     }
 
+    let restaurant = null;
     let restaurantName = "";
-    let restaurantLatitude = null;
-    let restaurantLongitude = null;
     if (restaurantId) {
-      const restaurant = await RestaurantPartner.findById(restaurantId);
+      restaurant = await RestaurantPartner.findById(restaurantId);
       restaurantName = restaurant?.restaurantName || "";
-      // Snapshot the restaurant's current coords onto the order — see model comment
-      restaurantLatitude = restaurant?.latitude ?? null;
-      restaurantLongitude = restaurant?.longitude ?? null;
     }
+
+    const charges = await recomputeOrderCharges({
+      restaurant,
+      itemTotal: itemTotal || 0,
+      discountAmount,
+      deliveryLatitude,
+      deliveryLongitude,
+    });
 
     const order = await Order.create({
       userId: req.user._id,
       restaurantId,
       restaurantName,
       items,
-      totalAmount,
+      totalAmount: charges.totalAmount,
       itemTotal: itemTotal || 0,
-      deliveryFee: deliveryFee || 0,
-      platformFee: platformFee || 0,
-      gst: gst || 0,
+      deliveryFee: charges.deliveryFee,
+      platformFee: charges.platformFee,
+      gst: charges.gst,
+      gstRatePercent: charges.gstRatePercent,
+      distanceKm: charges.distanceKm,
       couponCode: couponCode || "",
-      discountAmount: discountAmount || 0,
+      discountAmount: Math.max(0, Number(discountAmount) || 0),
       paymentMethod: paymentMethod || "cod",
       paymentStatus: paymentMethod === "cod" ? "pending" : "paid",
       deliveryAddress,
-      restaurantLatitude,
-      restaurantLongitude,
+      restaurantLatitude: restaurant?.latitude ?? null,
+      restaurantLongitude: restaurant?.longitude ?? null,
       deliveryLatitude: deliveryLatitude ?? null,
       deliveryLongitude: deliveryLongitude ?? null,
       ...(estimatedDeliveryTime ? { estimatedDeliveryTime } : {}),
@@ -182,7 +229,7 @@ exports.placeOrder = async (req, res) => {
       Coupon.updateOne({ code: couponCode }, { $inc: { timesUsed: 1 } }).catch(() => {});
     }
 
-    notifyRestaurantOfNewOrder(order); // NEW
+    notifyRestaurantOfNewOrder(order);
 
     res.status(201).json({ success: true, data: order });
   } catch (error) {
@@ -203,8 +250,6 @@ exports.getUserOrders = async (req, res) => {
 
 exports.getOrderById = async (req, res) => {
   try {
-    // latitude/longitude included as a fallback for orders placed before the
-    // restaurantLatitude/restaurantLongitude snapshot fields existed
     const order = await Order.findOne({ _id: req.params.id, userId: req.user._id }).populate(
       "restaurantId",
       "restaurantName logoUrl address latitude longitude"
@@ -216,10 +261,6 @@ exports.getOrderById = async (req, res) => {
   }
 };
 
-// NEW — hook for the delivery-partner app to push live GPS pings once it exists.
-// TODO: once the delivery-partner backend/auth exists, protect this with a
-// verifyDeliveryPartnerToken middleware (and check order.assignedRiderId === req.rider._id)
-// instead of leaving it open — right now there is no rider auth to check against.
 exports.updateRiderLocation = async (req, res) => {
   try {
     const { latitude, longitude, riderName } = req.body;
@@ -236,7 +277,6 @@ exports.updateRiderLocation = async (req, res) => {
     if (riderName) order.riderName = riderName;
     await order.save();
 
-    // Same room the tracking screen already joins for order_status_updated
     getIO().to(`order_${order._id}`).emit("order_location_updated", {
       _id: order._id,
       riderLatitude: order.riderLatitude,
@@ -268,8 +308,6 @@ exports.cancelOrder = async (req, res) => {
   }
 };
 
-// Kept for back-compat / admin use. The restaurant dashboard now uses
-// controllers/restaurantOrderController.js instead, which validates status transitions.
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status } = req.body;

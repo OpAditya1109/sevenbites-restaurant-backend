@@ -37,6 +37,9 @@ const orderSchema = new mongoose.Schema(
     gst: { type: Number, default: 0 },
     couponCode: { type: String, default: "" },
     discountAmount: { type: Number, default: 0 },
+    // NEW — snapshot of what drove the fee calc, for auditing/support
+    distanceKm: { type: Number, default: null },
+    gstRatePercent: { type: Number, default: null },
     paymentMethod: { type: String, enum: ["upi", "card", "cod", "wallet"], default: "cod" },
     paymentStatus: { type: String, enum: ["pending", "paid", "failed"], default: "pending" },
     razorpayOrderId: { type: String, default: "" },
