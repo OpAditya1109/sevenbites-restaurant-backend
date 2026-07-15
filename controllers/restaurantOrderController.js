@@ -1,11 +1,9 @@
 const Order = require("../models/Order");
 const RestaurantSettlementConfig = require("../models/RestaurantSettlementConfig");
 const { computeSettlement } = require("../utils/settlementCalculator");
-const { getIO } = require("../utils/socket");
+const { notifyCustomerOfOrder } = require("../utils/customerOrderNotify");
 
 // Statuses the restaurant is allowed to move an order INTO, keyed by its CURRENT status.
-// Mirrors the linear kitchen-flow used by every food-delivery dashboard (Zomato/Swiggy included):
-// placed -> confirmed -> preparing -> ready -> out_for_delivery -> delivered
 const ALLOWED_TRANSITIONS = {
   placed: ["confirmed", "rejected"],
   confirmed: ["preparing"],
@@ -22,8 +20,6 @@ const STATUS_TIMESTAMP_FIELD = {
   delivered: "deliveredAt",
 };
 
-// Ensures exactly one settlement config doc exists — same pattern as
-// pricingController.js's getOrCreateActiveConfig().
 async function getOrCreateActiveSettlementConfig() {
   let config = await RestaurantSettlementConfig.findOne({ key: "default" });
   if (!config) {
@@ -32,19 +28,7 @@ async function getOrCreateActiveSettlementConfig() {
   return config;
 }
 
-// Pushes the update to the customer's app instantly — both a per-user room (order list/home
-// screen) and a per-order room (the live tracking screen if they're on it)
-function notifyCustomer(order) {
-  try {
-    const io = getIO();
-    io.to(`user_${order.userId}`).emit("order_status_updated", order);
-    io.to(`order_${order._id}`).emit("order_status_updated", order);
-  } catch (e) {
-    console.error("Socket emit failed:", e.message);
-  }
-}
-
-// GET /api/setup/orders?status=placed  (comma-separated statuses supported, e.g. "confirmed,preparing")
+// GET /api/setup/orders?status=placed
 exports.getRestaurantOrders = async (req, res) => {
   try {
     const { status } = req.query;
@@ -100,7 +84,7 @@ exports.respondToOrder = async (req, res) => {
     }
 
     await order.save();
-    notifyCustomer(order);
+    notifyCustomerOfOrder(order); // fire and forget, doesn't block the response
     res.json({ success: true, data: order });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -126,9 +110,6 @@ exports.updateRestaurantOrderStatus = async (req, res) => {
     const tsField = STATUS_TIMESTAMP_FIELD[status];
     if (tsField) order[tsField] = new Date();
 
-    // NEW — compute + store restaurant settlement figures only once the order
-    // is actually delivered. Cancelled/rejected orders never reach this branch,
-    // so they never count toward commission.
     if (status === "delivered") {
       const config = await getOrCreateActiveSettlementConfig();
       const settlement = computeSettlement(
@@ -143,7 +124,7 @@ exports.updateRestaurantOrderStatus = async (req, res) => {
     }
 
     await order.save();
-    notifyCustomer(order);
+    notifyCustomerOfOrder(order);
     res.json({ success: true, data: order });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

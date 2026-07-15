@@ -7,6 +7,7 @@ const PricingConfig = require("../models/PricingConfig");
 const { computeCharges } = require("../utils/pricingCalculator");
 const { haversineDistanceKm } = require("../utils/geo");
 const { getIO } = require("../utils/socket");
+const { notifyCustomerOfOrder } = require("../utils/customerOrderNotify");
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -164,6 +165,7 @@ exports.verifyPaymentAndPlaceOrder = async (req, res) => {
     }
 
     notifyRestaurantOfNewOrder(order);
+    notifyCustomerOfOrder(order); // NEW — customer gets the "Order Placed" notification immediately
 
     res.status(201).json({ success: true, data: order });
   } catch (error) {
@@ -230,6 +232,7 @@ exports.placeOrder = async (req, res) => {
     }
 
     notifyRestaurantOfNewOrder(order);
+    notifyCustomerOfOrder(order); // NEW — customer gets the "Order Placed" notification immediately
 
     res.status(201).json({ success: true, data: order });
   } catch (error) {
